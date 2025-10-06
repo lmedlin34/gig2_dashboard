@@ -1,4 +1,3 @@
-
 import io
 import os
 import base64
@@ -20,6 +19,8 @@ brand_name = st.sidebar.text_input("Brand/Client Name", "Bait N' Shack Analytics
 accent = st.sidebar.color_picker("Accent color", "#2C7BE5")
 st.sidebar.markdown("---")
 st.sidebar.caption("Built with Streamlit • Export insights as CSV & PNG")
+
+st.caption("Note: If the bundled sample CSV is missing on the deploy platform, a synthetic sample dataset will be generated automatically.")
 
 # ---- Helper: CSS for accent ----
 st.markdown(f"""
@@ -45,14 +46,61 @@ st.markdown(f"""
 @st.cache_data
 def load_sample():
     sample_path = os.path.join("data", "sample_sales.csv")
-    return pd.read_csv(sample_path, parse_dates=["order_date"])
+    # If a bundled sample exists, use it; otherwise generate a synthetic one
+    try:
+        if os.path.exists(sample_path):
+            return pd.read_csv(sample_path, parse_dates=["order_date"])  # type: ignore[arg-type]
+    except Exception:
+        pass
+
+    # --- Fallback synthetic dataset (works on Streamlit Cloud too) ---
+    rng = pd.date_range("2024-01-01", periods=180, freq="D")
+    rng = rng.append(pd.date_range("2024-07-01", periods=90, freq="D"))
+    n = len(rng)
+    np.random.seed(42)
+    cats = np.random.choice(["Online", "Retail", "Wholesale"], size=n, p=[0.5, 0.35, 0.15])
+    regions = np.random.choice(["East", "South", "Midwest", "West"], size=n)
+    units = np.random.poisson(lam=8, size=n).clip(min=0)
+    price = np.random.lognormal(mean=3.0, sigma=0.3, size=n).round(2)
+    sales = (units * price).round(2)
+    df_gen = pd.DataFrame({
+        "order_date": rng,
+        "channel": cats,
+        "region": regions,
+        "units": units,
+        "price": price,
+        "sales": sales,
+    })
+    return df_gen
 
 def load_user_file(uploaded):
-    return pd.read_csv(uploaded)
+    # Try UTF-8 first, then fallback to common encodings
+    # Streamlit uploader provides a file-like object compatible with pandas
+    for enc in ("utf-8", "utf-8-sig", "latin-1"):
+        try:
+            dfu = pd.read_csv(uploaded, encoding=enc)
+            break
+        except Exception:
+            uploaded.seek(0)
+            dfu = None
+    if dfu is None:
+        # Last resort: let pandas sniff; if still failing, raise
+        uploaded.seek(0)
+        dfu = pd.read_csv(uploaded, engine="python", error_bad_lines=False)  # type: ignore[call-arg]
+
+    # Best-effort parse of columns containing 'date' or 'time'
+    for col in dfu.columns:
+        cl = str(col).lower()
+        if "date" in cl or "time" in cl or "dt" in cl:
+            try:
+                dfu[col] = pd.to_datetime(dfu[col], errors="ignore")
+            except Exception:
+                pass
+    return dfu
 
 if mode == "Portfolio Demo (sample data)":
     df = load_sample()
-    st.toast("Loaded sample dataset.", icon="✅")
+    st.toast("Loaded sample dataset (bundled or generated).", icon="✅")
 else:
     up = st.file_uploader("Upload a CSV (<= 50 MB)", type=["csv"])
     if up is not None:
